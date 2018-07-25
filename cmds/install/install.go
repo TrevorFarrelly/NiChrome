@@ -15,7 +15,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/google/uuid"
+	"github.com/u-root/u-root/pkg/cpio"
 	"github.com/u-root/u-root/pkg/gpt"
 )
 
@@ -39,10 +39,10 @@ func parseCmdline() {
 }
 
 // Find the boot media containing the root GUID.
-func findKernDev(devs ...string) (string, uuid.UUID, error) {
+func findKernDev(devs ...string) (string, gpt.GUID, error) {
 	rg, ok := cmdline["guid_root"]
 	if !ok {
-		return "", uuid.UUID{}, fmt.Errorf("No guid_root cmdline parameter")
+		return "", gpt.GUID{}, fmt.Errorf("No guid_root cmdline parameter")
 	}
 	for _, d := range devs {
 		fi, err := os.Stat(d)
@@ -71,7 +71,7 @@ func findKernDev(devs ...string) (string, uuid.UUID, error) {
 			return fmt.Sprintf("%s", d), pt.Primary.Parts[1].UniqueGUID, nil
 		}
 	}
-	return "", uuid.UUID{}, fmt.Errorf("A device with that GUID was not found")
+	return "", gpt.GUID{}, fmt.Errorf("A device with that GUID was not found")
 }
 
 func main() {
@@ -145,10 +145,33 @@ func main() {
 	if _, err := io.Copy(destKern, kern); err != nil {
 		log.Fatal(err)
 	}
-	if _, err := io.Copy(destRoot, root); err != nil {
-		log.Fatal(err)
+	// TODO: create a pass function in cpio package
+	// that takes an io.Write, an io.Reader, and
+	// does this. But let's get it right first.
+	archiver, err := cpio.Format("newc")
+	if err != nil {
+		log.Fatalf("newc not supported: %v", err)
+	}
+
+	r := archiver.Reader(root)
+	w := archiver.Writer(destRoot)
+	for {
+		rec, err := r.ReadRecord()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			log.Fatalf("error reading records: %v", err)
+		}
+		if err := w.WriteRecord(rec); err != nil {
+			log.Fatalf("Writing record %q failed: %v", rec, err)
+		}
+	}
+	if err := cpio.WriteTrailer(w); err != nil {
+		log.Fatalf("Writing Trailer failed: %v", err)
 	}
 	pt.Primary.Parts[3].UniqueGUID = u
+	pt.Backup.Parts[3].UniqueGUID = u
 	if err := gpt.Write(destDev, pt); err != nil {
 		log.Fatal(err)
 	}

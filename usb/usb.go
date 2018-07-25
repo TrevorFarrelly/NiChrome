@@ -23,7 +23,6 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/google/uuid"
 	"github.com/u-root/u-root/pkg/gpt"
 )
 
@@ -98,6 +97,20 @@ func tildeExpand(input string) string {
 	return input
 }
 
+func checkDevice(n string) error {
+	if filepath.Dir(n) != "/dev" {
+		return nil
+	}
+	fi, err := os.Stat(n)
+	if err != nil {
+		return err
+	}
+	if fi.Mode()&os.ModeDevice != os.ModeDevice {
+		return fmt.Errorf("%q is in /dev and is not a device?", n)
+	}
+	return nil
+}
+
 func setup() error {
 	dir, err := os.Getwd()
 	syscall.Umask(0)
@@ -118,6 +131,12 @@ func setup() error {
 		return nil
 	}
 	kernDev, rootDev = *dev+"2", *dev+"3"
+	if err := checkDevice(kernDev); err != nil {
+		return err
+	}
+	if err := checkDevice(rootDev); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -328,7 +347,7 @@ func vbutilIt() error {
 	if err != nil {
 		log.Printf("gpt %v failed (warning only): %v", args, err)
 	}
-	var pg uuid.UUID
+	var pg gpt.GUID
 	if err == nil {
 		var pt = &gpt.PartitionTable{}
 		if err := json.NewDecoder(bytes.NewBuffer(msg)).Decode(&pt); err != nil {
@@ -338,17 +357,17 @@ func vbutilIt() error {
 			// of the struct are nil
 			log.Printf("Unable to parse GPT header of %v", *dev)
 		} else {
-			pg = uuid.UUID(pt.Primary.Parts[kernPart-1].UniqueGUID)
+			pg = gpt.GUID(pt.Primary.Parts[kernPart-1].UniqueGUID)
 			// We may not be able to read a GPT, consider the case that dev is /dev/null.
 			// But it is an error for it to be zero if we succeeded in reading it.
-			var zeropg uuid.UUID
+			var zeropg gpt.GUID
 			if pg == zeropg {
 				log.Fatalf("Partition GUID for part %d is zero", kernPart-1)
 			}
 		}
 	}
 	newKern := "newKern"
-	configTxt := fmt.Sprintf("%sguid_root=%s\n", configTxt, pg)
+	configTxt := fmt.Sprintf("%sguid_root=%s\n", configTxt, pg.String())
 	if err := ioutil.WriteFile("config.txt", []byte(configTxt), 0644); err != nil {
 		return err
 	}
@@ -357,8 +376,8 @@ func vbutilIt() error {
 	}
 	bzImage := "linux-stable/arch/x86/boot/bzImage"
 	fmt.Printf("Bz image is located at %s \n", bzImage)
-	keyblock := filepath.Join(*keys, "kernel.keyblock")
-	sign := filepath.Join(*keys, "kernel_data_key.vbprivk")
+	keyblock := filepath.Join(*keys, "recovery_kernel.keyblock")
+	sign := filepath.Join(*keys, "recovery_kernel_data_key.vbprivk")
 	cmd := exec.Command("./vboot_reference/build/futility/futility", "vbutil_kernel", "--pack", newKern, "--keyblock", keyblock, "--signprivate", sign, "--version", "1", "--vmlinuz", bzImage, "--bootloader", "nocontent.efi", "--config", "config.txt", "--arch", "x86")
 	stdoutStderr, err := cmd.CombinedOutput()
 	fmt.Printf("%s\n", stdoutStderr)
